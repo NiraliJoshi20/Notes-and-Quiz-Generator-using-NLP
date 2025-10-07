@@ -10,30 +10,28 @@ import nltk
 from nltk.tokenize import sent_tokenize
 import random
 import re
+import requests # NEW: For downloading model zip
+import zipfile
+from io import BytesIO 
 
-
-# --- Configuration ---
-MODEL_PATH = "./final_notes_quiz_model"
-# ... other constants ...
-
-# The actual download logic should be made safe now that DownloadError is imported
+# --- Setup and Constants ---
 try:
     nltk.data.find('tokenizers/punkt')
-except Exception: # Catch any error (including LookupError) and force the download
-    import nltk # Re-import to be absolutely sure the module is ready for download command
+except (nltk.downloader.DownloadError, LookupError): # Retained the safest general exception structure
     nltk.download('punkt')
 
-# --- Configuration ---
+# --- Model and Generation Configuration ---
 MODEL_PATH = "./final_notes_quiz_model"
-MAX_INPUT_LENGTH = 512 # Increased max input length (matches T5-Base training)
-MAX_OUTPUT_LENGTH = 200 # Increased output length for less truncation in summaries
-QA_MAX_LENGTH = 30 # Increased answer length filter
+MAX_INPUT_LENGTH = 512    
+MAX_OUTPUT_LENGTH = 200   # Increased for less summary truncation
+QA_MAX_LENGTH = 30        
 QUESTION_WORDS = ["who", "what", "where", "when", "why", "how", "which"] 
 
-# --- Delimiters (Must match your T5 training target format!) ---
-# Assuming your model was trained on the simpler pipe format based on your app code,
-# but we will make the parsing robust for either clean pipe or structured delimiters.
-# We will use the pipe split for compatibility with the provided app logic.
+# Delimiters (Must match the formats your model was trained on)
+MCQ_DELIMITER = "[MCQ]"
+OPTIONS_DELIMITER = "[OPT]"
+ANSWER_DELIMITER = "[ANS]"
+SUM_DELIMITER = "[SUM]"
 
 # ----------------------------------------------------------------------
 # 🌟 CRITICAL FIX: st.set_page_config() MUST BE THE FIRST STREAMLIT COMMAND
@@ -46,15 +44,45 @@ st.set_page_config(
 )
 # ----------------------------------------------------------------------
 
-# --- Helper Functions ---
+# --- Core Helper Functions ---
 
 @st.cache_resource
 def load_model():
-    """Loads the fine-tuned T5 model and tokenizer."""
-    if not os.path.exists(MODEL_PATH):
-        st.error(f"Model directory not found at: {MODEL_PATH}")
-        st.stop()
+    """
+    Downloads, unzips, and loads the T5 model.
+    This bypasses Git LFS issues by fetching a single ZIP file publicly.
+    """
     
+    # 🛑 USER ACTION REQUIRED: PASTE YOUR DIRECT DOWNLOAD LINK HERE
+    MODEL_DOWNLOAD_URL = "https://drive.google.com/file/d/1dZfxKtpok84u2QI2egnuR39j8GclYdoC/view?usp=sharing" 
+    # -----------------------------------------------------------
+    
+    MODEL_ZIP_PATH = "final_notes_quiz_model.zip"
+    
+    # 1. Check if the model is already downloaded/extracted
+    if not os.path.exists(MODEL_PATH) or not os.listdir(MODEL_PATH):
+        st.warning(f"Model not found locally. Downloading from cloud source...")
+        
+        try:
+            # Download the ZIP file
+            response = requests.get(MODEL_DOWNLOAD_URL, stream=True, timeout=300) # Added timeout
+            if response.status_code != 200:
+                st.error(f"Failed to download model. Status: {response.status_code}")
+                st.stop()
+            
+            # Save and extract the ZIP file
+            with st.spinner("Extracting model files..."):
+                with zipfile.ZipFile(BytesIO(response.content)) as zip_ref:
+                    # Extracts the contents into the current directory, which creates MODEL_PATH
+                    zip_ref.extractall("./")
+            
+            st.success("Model downloaded and extracted successfully!")
+        
+        except Exception as e:
+            st.error(f"Error during model download/extraction. Check your URL and file size: {e}")
+            st.stop()
+
+    # 2. Load the Model (standard loading process)
     device = torch.device("cuda" if torch.cuda.is_available() and torch.cuda.device_count() > 0 else "cpu")
     
     with st.spinner(f"Loading T5 model onto {device}..."):
@@ -99,7 +127,7 @@ def generate_output(input_text, tokenizer, model, device, max_length, temperatur
             output = model.generate(
                 input_ids,
                 max_length=max_length,
-                num_beams=8, # Increased beams for higher quality/coherence (Crucial fix)
+                num_beams=8, # Increased beams for higher quality/coherence
                 early_stopping=True,
                 temperature=temperature, 
                 top_k=50,
@@ -118,8 +146,39 @@ def clean_answer(answer):
     answer = re.sub(r'\.$', '', answer)
     return answer.capitalize()
 
+def parse_mcq_output(result_raw):
+    """Parses MCQs with maximum forgiveness and fallbacks."""
+    
+    # 1. Answer Extraction (Prioritize extracting the answer tag)
+    answer = "N/A"
+    answer_match = re.search(r'(?:answer:|' + re.escape(ANSWER_DELIMITER) + r')\s*(.*)', result_raw, re.IGNORECASE)
+    if answer_match:
+        answer = clean_answer(answer_match.group(1).strip())
+    
+    # 2. Options Extraction (Everything preceding the answer, or the whole raw text if no answer tag)
+    options_raw = result_raw
+    if answer_match:
+        options_raw = result_raw[:answer_match.start()].strip()
+    
+    if "options:" in options_raw:
+        options_raw = options_raw.split("options:", 1)[-1].strip()
+
+    options_list = []
+    
+    # 3. Split options by the most likely delimiter (Trained delimiter first, then pipe)
+    if OPTIONS_DELIMITER in options_raw:
+        options_list = [clean_answer(opt) for opt in options_raw.split(OPTIONS_DELIMITER) if opt.strip()]
+    elif '|' in options_raw:
+        # Fallback to simple pipe split (used in many quick models)
+        options_list = [clean_answer(opt) for opt in options_raw.split('|') if opt.strip()]
+    else:
+         # Last resort: if no delimiter found, treat the whole option block as one item (will likely fail validity check)
+         options_list = [clean_answer(options_raw)]
+        
+    return options_list[:4], answer
+
 def generate_single_quiz_item(context_chunk, question_type, tokenizer, model, device):
-    """Generates a QG item, forces a factual answer, and filters poor output."""
+    """Generates a quiz item, RELAXES filters to increase count."""
     if len(context_chunk.split()) < 40:
         return None, None, None
         
@@ -127,20 +186,17 @@ def generate_single_quiz_item(context_chunk, question_type, tokenizer, model, de
     if not sentences:
         return None, None, None
     
-    # Use 3 random sentences to generate a central point for the question
-    base_text = " ".join(random.sample(sentences, min(3, len(sentences))))
-    
     try:
         if question_type == "QG":
-            # --- Step 1: Generate Question (QG Task) ---
-            qg_prefix = f"generate question: context: {base_text} answer: a key fact"
+            # --- QG: Generate Question and Chain to Answer ---
+            qg_prefix = f"generate question: context: {context_chunk} answer: a key detail"
             generated_question = generate_output(qg_prefix, tokenizer, model, device, max_length=64, temperature=0.8)
 
-            # --- HEURISTIC 1 (RELAXED): Only check for question mark and minimum length ---
+            # --- HEURISTIC 1 (MAXIMUM RELAXATION): Only check for question mark and min length ---
             if "?" not in generated_question or len(generated_question.split()) < 3:
                  return None, None, None 
 
-            # --- Step 2: Generate Factual Answer (QA Task) ---
+            # --- Step 2: Generate Answer ---
             qa_prefix = f"question: {generated_question} context: {context_chunk}"
             generated_answer = generate_output(qa_prefix, tokenizer, model, device, max_length=QA_MAX_LENGTH, temperature=0.1)
             
@@ -153,27 +209,24 @@ def generate_single_quiz_item(context_chunk, question_type, tokenizer, model, de
             return "QG_QA", generated_question, cleaned_answer
 
         elif question_type == "MCQ":
-            # NOTE: For MCQ, we rely entirely on the model to generate the full structured string
+            # --- MCQ: Generate the full structured string ---
             input_prefix = f"generate mcq: context: {context_chunk}"
             result_raw = generate_output(input_prefix, tokenizer, model, device, max_length=MAX_OUTPUT_LENGTH, temperature=0.7)
             
-            # --- HEURISTIC 3: Ensure MCQ format is parsable by pipes (minimum requirement) ---
-            # If the model was trained strictly on [OPT] delimiters, this will still mostly work 
-            # if the model uses pipes as fallback, but ideally should match the training output format.
-            if "|" not in result_raw:
+            # --- HEURISTIC 3: Must contain at least one separator to be attempted for parsing ---
+            if not ("|" in result_raw or "options:" in result_raw or ANSWER_DELIMITER in result_raw):
                  return None, None, None
 
-            return "MCQ", "What is a key detail from this chunk?", result_raw
+            return "MCQ", "Select the correct option from this chunk.", result_raw
     
-    except Exception as e:
-        # st.warning(f"Error during quiz item generation: {e}") # Commented out for cleaner app log
+    except Exception:
         return None, None, None
         
     return None, None, None
 
-# --- Main App Execution ---
+# --- Main App Execution Starts Here ---
 
-# 1. Load model first (cached)
+# 1. Load model (cached)
 tokenizer, model, device = load_model()
 
 # --- Sidebar Content ---
@@ -275,7 +328,7 @@ if generate_button:
         start_time = time.time()
 
         # ----------------------------------------------------
-        # PHASE 1: GENERATE SUMMARY NOTES (CLEANED)
+        # PHASE 1: GENERATE SUMMARY NOTES
         # ----------------------------------------------------
         if output_choice in ['Generate Both (Notes & Quiz)', 'Notes Only']:
             status.update(label="Generating Summary Notes (Phase 1/2): Applying Cleaning Heuristics...", state="running")
@@ -295,22 +348,17 @@ if generate_button:
 
             full_summary_sentences = []
             
-            # Process each chunk
             for chunk in summary_chunks:
                 input_prefix = f"summarize: {chunk}"
-                
                 generated_summary_raw = generate_output(input_prefix, tokenizer, model, device, max_length=MAX_OUTPUT_LENGTH, temperature=0.9)
                 
-                # Robust summary parsing, falling back to raw output if delimiters fail
+                # Robust summary parsing
+                long_summary = generated_summary_raw
                 if "| long:" in generated_summary_raw:
                     long_summary = generated_summary_raw.split("| long:")[-1].strip()
                 elif "long:" in generated_summary_raw:
                     long_summary = generated_summary_raw.split("long:")[-1].strip()
-                else:
-                    # Fallback: just use the whole output
-                    long_summary = generated_summary_raw
                 
-                # Post-process: Break into sentences and add unique ones
                 for sent in sent_tokenize(long_summary):
                     if sent not in full_summary_sentences and len(sent.split()) > 5:
                          full_summary_sentences.append(sent)
@@ -327,12 +375,11 @@ if generate_button:
             )
 
         # ----------------------------------------------------
-        # PHASE 2: GENERATE QUIZ (QG -> QA CHAINED & FILTERED)
+        # PHASE 2: GENERATE QUIZ
         # ----------------------------------------------------
         if output_choice in ['Generate Both (Notes & Quiz)', 'Quiz Only']:
             status.update(label=f"Generating {num_questions} Quiz Questions (Phase 2/2): Applying Filters...", state="running")
             
-            # Chunking and Sampling logic
             quiz_chunks = []
             current_quiz_chunk = ""
             for sent in sentences:
@@ -344,15 +391,13 @@ if generate_button:
             if current_quiz_chunk:
                 quiz_chunks.append(current_quiz_chunk.strip())
             
-            # Ensure we have enough chunks to sample from
-            if len(quiz_chunks) > num_questions * 3: # Use a higher multiplier to increase success rate
+            if len(quiz_chunks) > num_questions * 3: 
                 selected_chunks = random.sample(quiz_chunks, num_questions * 3)
             else:
                 selected_chunks = quiz_chunks
 
             quiz_items = []
             
-            # Generation Loop with Error Handling/Filtering
             for i, chunk in enumerate(selected_chunks):
                 if len(quiz_items) >= num_questions:
                     break
@@ -366,37 +411,23 @@ if generate_button:
                         "answer": result_raw
                     })
                 
-                elif item_type == "MCQ" and ("|" in result_raw or "options:" in result_raw):
+                elif item_type == "MCQ":
+                    # --- ROBUST MCQ PARSING ---
+                    options_list, answer = parse_mcq_output(result_raw)
+                    
                     try:
-                        # Robust Parsing for MCQ (Handles both pipe and potential strict format fails)
-                        
-                        # 1. Split by the main option separator
-                        parts = result_raw.split("|")
-                        
-                        # 2. Extract answer part (assumed to be the last part prefixed by 'answer:')
-                        answer_part_raw = parts[-1]
-                        answer_match = re.search(r'answer:\s*(.*)', answer_part_raw)
-                        answer = clean_answer(answer_match.group(1).strip()) if answer_match else "N/A"
-                        
-                        # 3. Extract options (everything before the last 'answer:' part)
-                        options_raw = result_raw.replace(answer_part_raw, "").replace("options:", "").strip()
-                        
-                        # Re-split/clean remaining options based on pipe or space
-                        options_list = [clean_answer(opt) for opt in options_raw.split('|') if opt.strip()]
-                        
-                        # Final check for validity
-                        if len(options_list) < 3 or answer == "N/A":
-                            raise ValueError("Bad MCQ format detected after cleaning.")
+                        # Final check for validity: must have 3+ options and a valid answer
+                        if len(options_list) >= 3 and answer not in ["N/A", ""]:
+                            quiz_items.append({
+                                "type": "MCQ",
+                                "question": f"Question {len(quiz_items) + 1}: Select the correct option. (Difficulty: {difficulty})",
+                                "options": options_list,
+                                "answer": answer
+                            })
+                        # else: item is silently skipped due to parsing/quality failure
 
-                        quiz_items.append({
-                            "type": "MCQ",
-                            "question": f"Question {len(quiz_items) + 1}: Select the correct option. (Difficulty: {difficulty})",
-                            "options": options_list,
-                            "answer": answer
-                        })
-                    except Exception as e:
-                        # st.warning(f"Skipping badly formatted MCQ item. Error: {e}")
-                        pass
+                    except Exception:
+                        pass 
 
             # Display Quiz and Final Feedback
             generated_count = len(quiz_items)
@@ -436,6 +467,4 @@ if generate_button:
 
         # Final Status Update
         end_time = time.time()
-
         status.update(label=f"Generation Complete! Total Time: {end_time - start_time:.2f} seconds.", state="complete")
-
