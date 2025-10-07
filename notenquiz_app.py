@@ -7,7 +7,7 @@ import io
 import re
 from pypdf import PdfReader
 import nltk
-from nltk.downloader import DownloadError # CRITICAL: Explicit import for safe error handling
+# FIX: Removed the failing explicit import and relying on safe LookupError
 from nltk.tokenize import sent_tokenize
 import random
 import re
@@ -17,10 +17,10 @@ from io import BytesIO
 import shutil # Needed for folder deletion in extraction
 
 # --- Setup and Constants ---
-# FIX: Rely on simple LookupError or generic Exception which Python can always resolve.
+# FIX: Rely on simple LookupError (safest standard Python exception)
 try:
     nltk.data.find('tokenizers/punkt')
-except LookupError: # Using LookupError as the safest, standard Python exception for missing resources
+except LookupError: # This simple exception will always be resolvable, preventing the crash.
     nltk.download('punkt')
 
 # --- Model and Generation Configuration ---
