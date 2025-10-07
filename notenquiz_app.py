@@ -7,27 +7,29 @@ import io
 import re
 from pypdf import PdfReader
 import nltk
+from nltk.downloader import DownloadError # CRITICAL: Explicit import for safe error handling
 from nltk.tokenize import sent_tokenize
 import random
 import re
-import requests # NEW: For downloading model zip
+import requests
 import zipfile
 from io import BytesIO 
+import shutil # Needed for folder deletion in extraction
 
 # --- Setup and Constants ---
 try:
     nltk.data.find('tokenizers/punkt')
-except (nltk.downloader.DownloadError, LookupError): # Retained the safest general exception structure
+except (DownloadError, LookupError): # Now uses the safe, imported DownloadError class
     nltk.download('punkt')
 
 # --- Model and Generation Configuration ---
 MODEL_PATH = "./final_notes_quiz_model"
-MAX_INPUT_LENGTH = 512    
-MAX_OUTPUT_LENGTH = 200   # Increased for less summary truncation
+MAX_INPUT_LENGTH = 512
+MAX_OUTPUT_LENGTH = 200   
 QA_MAX_LENGTH = 30        
 QUESTION_WORDS = ["who", "what", "where", "when", "why", "how", "which"] 
 
-# Delimiters (Must match the formats your model was trained on)
+# Delimiters (Must match training and parsing logic)
 MCQ_DELIMITER = "[MCQ]"
 OPTIONS_DELIMITER = "[OPT]"
 ANSWER_DELIMITER = "[ANS]"
@@ -49,40 +51,59 @@ st.set_page_config(
 @st.cache_resource
 def load_model():
     """
-    Downloads, unzips, and loads the T5 model.
-    This bypasses Git LFS issues by fetching a single ZIP file publicly.
+    Downloads, unzips, and loads the T5 model from a public ZIP file.
+    This resolves deployment issues with large files (Git LFS).
     """
     
-    # 🛑 USER ACTION REQUIRED: PASTE YOUR DIRECT DOWNLOAD LINK HERE
-    MODEL_DOWNLOAD_URL = "https://drive.google.com/file/d/1dZfxKtpok84u2QI2egnuR39j8GclYdoC/view?usp=sharing" 
+    # 🛑 CRITICAL: REPLACE WITH YOUR DIRECT PUBLIC DOWNLOAD LINK
+    MODEL_DOWNLOAD_URL = "YOUR_DIRECT_PUBLIC_DOWNLOAD_LINK_HERE" 
     # -----------------------------------------------------------
-    
-    MODEL_ZIP_PATH = "final_notes_quiz_model.zip"
     
     # 1. Check if the model is already downloaded/extracted
     if not os.path.exists(MODEL_PATH) or not os.listdir(MODEL_PATH):
+        
+        if MODEL_DOWNLOAD_URL == "https://drive.google.com/file/d/1dZfxKtpok84u2QI2egnuR39j8GclYdoC/view?usp=sharing":
+             st.error("MODEL URL ERROR: Please replace the placeholder link in the code.")
+             st.stop()
+
         st.warning(f"Model not found locally. Downloading from cloud source...")
         
         try:
             # Download the ZIP file
-            response = requests.get(MODEL_DOWNLOAD_URL, stream=True, timeout=300) # Added timeout
+            response = requests.get(MODEL_DOWNLOAD_URL, stream=True, timeout=300)
             if response.status_code != 200:
-                st.error(f"Failed to download model. Status: {response.status_code}")
+                st.error(f"Failed to download model. Status: {response.status_code}. Check URL permissions.")
                 st.stop()
             
-            # Save and extract the ZIP file
+            # --- CRITICAL EXTRACTION FIX ---
+            os.makedirs(MODEL_PATH, exist_ok=True)
+            
             with st.spinner("Extracting model files..."):
-                with zipfile.ZipFile(BytesIO(response.content)) as zip_ref:
-                    # Extracts the contents into the current directory, which creates MODEL_PATH
-                    zip_ref.extractall("./")
+                zip_content = BytesIO(response.content)
+                with zipfile.ZipFile(zip_content) as zip_ref:
+                    
+                    # Extract the contents into a temporary directory
+                    temp_dir = "./temp_model_extract"
+                    zip_ref.extractall(temp_dir)
+                    
+                    # Determine the source directory inside the zip (handles nested folders)
+                    source_dir = temp_dir
+                    if len(os.listdir(temp_dir)) == 1 and os.path.isdir(os.path.join(temp_dir, os.listdir(temp_dir)[0])):
+                        source_dir = os.path.join(temp_dir, os.listdir(temp_dir)[0])
+                    
+                    # Move files from the source directory to the final MODEL_PATH
+                    for item_name in os.listdir(source_dir):
+                        shutil.move(os.path.join(source_dir, item_name), MODEL_PATH)
+                    
+                    shutil.rmtree(temp_dir)
             
             st.success("Model downloaded and extracted successfully!")
         
         except Exception as e:
-            st.error(f"Error during model download/extraction. Check your URL and file size: {e}")
+            st.error(f"Error during model download/extraction: {e}. Check your requirements.txt for 'requests' and 'pypdf'.")
             st.stop()
 
-    # 2. Load the Model (standard loading process)
+    # 2. Load the Model
     device = torch.device("cuda" if torch.cuda.is_available() and torch.cuda.device_count() > 0 else "cpu")
     
     with st.spinner(f"Loading T5 model onto {device}..."):
@@ -127,7 +148,7 @@ def generate_output(input_text, tokenizer, model, device, max_length, temperatur
             output = model.generate(
                 input_ids,
                 max_length=max_length,
-                num_beams=8, # Increased beams for higher quality/coherence
+                num_beams=8, 
                 early_stopping=True,
                 temperature=temperature, 
                 top_k=50,
@@ -149,13 +170,11 @@ def clean_answer(answer):
 def parse_mcq_output(result_raw):
     """Parses MCQs with maximum forgiveness and fallbacks."""
     
-    # 1. Answer Extraction (Prioritize extracting the answer tag)
     answer = "N/A"
     answer_match = re.search(r'(?:answer:|' + re.escape(ANSWER_DELIMITER) + r')\s*(.*)', result_raw, re.IGNORECASE)
     if answer_match:
         answer = clean_answer(answer_match.group(1).strip())
     
-    # 2. Options Extraction (Everything preceding the answer, or the whole raw text if no answer tag)
     options_raw = result_raw
     if answer_match:
         options_raw = result_raw[:answer_match.start()].strip()
@@ -165,14 +184,11 @@ def parse_mcq_output(result_raw):
 
     options_list = []
     
-    # 3. Split options by the most likely delimiter (Trained delimiter first, then pipe)
     if OPTIONS_DELIMITER in options_raw:
         options_list = [clean_answer(opt) for opt in options_raw.split(OPTIONS_DELIMITER) if opt.strip()]
     elif '|' in options_raw:
-        # Fallback to simple pipe split (used in many quick models)
         options_list = [clean_answer(opt) for opt in options_raw.split('|') if opt.strip()]
     else:
-         # Last resort: if no delimiter found, treat the whole option block as one item (will likely fail validity check)
          options_list = [clean_answer(options_raw)]
         
     return options_list[:4], answer
@@ -202,7 +218,6 @@ def generate_single_quiz_item(context_chunk, question_type, tokenizer, model, de
             
             # --- HEURISTIC 2 (RELAXED): Answer length check is more forgiving ---
             cleaned_answer = clean_answer(generated_answer)
-            # Increased max words from 10 to 15
             if not cleaned_answer or len(cleaned_answer.split()) > 15:
                  return None, None, None
 
