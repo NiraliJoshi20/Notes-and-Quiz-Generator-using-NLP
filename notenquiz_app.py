@@ -7,7 +7,6 @@ import io
 import re
 from pypdf import PdfReader
 import nltk
-# REMOVED: from nltk.downloader import DownloadError (This line caused the persistent ImportError)
 from nltk.tokenize import sent_tokenize
 import random
 import re
@@ -49,30 +48,44 @@ st.set_page_config(
 
 # --- Core Helper Functions ---
 
+def get_confirm_token(response):
+    """Parses Google Drive's redirect page for the confirmation token."""
+    for key, value in response.cookies.items():
+        if key.startswith('download_warning'):
+            return value
+    return None
+
 @st.cache_resource
 def load_model():
     """
-    Downloads, unzips, and loads the T5 model from a public ZIP file.
+    Downloads, unzips, and loads the T5 model from a public ZIP file using 
+    a robust method that handles Google Drive's security checks.
     """
     
     # 🛑 CRITICAL: YOUR CONSTRUCTED DIRECT DOWNLOAD LINK IS NOW HERE
     FILE_ID = "1dZfxKtpok84u2QI2egnuR39j8GclYdoC"
-    MODEL_DOWNLOAD_URL = f"https://drive.google.com/uc?export=download&id={FILE_ID}" 
+    DOWNLOAD_URL = "https://docs.google.com/uc?export=download" # Base URL for security check
     # -----------------------------------------------------------
     
     # 1. Check if the model is already downloaded/extracted
     if not os.path.exists(MODEL_PATH) or not os.listdir(MODEL_PATH):
-        
-        if MODEL_DOWNLOAD_URL == f"https://drive.google.com/uc?export=download&id={FILE_ID}":
-             st.info("Attempting to download model via Google Drive direct link...")
+        st.info("Attempting robust download from Google Drive...")
 
         try:
-            # Download the ZIP file
-            response = requests.get(MODEL_DOWNLOAD_URL, stream=True, timeout=300)
-            if response.status_code != 200:
-                st.error(f"Failed to download model. Status: {response.status_code}. Check URL permissions.")
-                st.stop()
+            # --- PHASE 1: Initiate Download and Get Confirmation Token ---
+            session = requests.Session()
+            response = session.get(DOWNLOAD_URL, params={'id': FILE_ID}, stream=True, timeout=300)
+            token = get_confirm_token(response)
+
+            # --- PHASE 2: Execute Final Download with Token ---
+            if token:
+                params = {'id': FILE_ID, 'confirm': token}
+                response = session.get(DOWNLOAD_URL, params=params, stream=True, timeout=300)
             
+            # Final check on response content type (should be application/zip)
+            if 'html' in response.headers.get('Content-Type', '').lower() or response.status_code != 200:
+                 raise Exception("Download received HTML content instead of a ZIP file.")
+
             # --- CRITICAL EXTRACTION FIX ---
             os.makedirs(MODEL_PATH, exist_ok=True)
             
@@ -98,7 +111,7 @@ def load_model():
             st.success("Model downloaded and extracted successfully!")
         
         except Exception as e:
-            st.error(f"Error during model download/extraction: {e}. If the error is 'File is not a zip file,' the Drive link is not direct.")
+            st.error(f"FATAL DOWNLOAD ERROR: {e}. Please ensure the Google Drive file is shared as 'Anyone with the link' and the ID is correct.")
             st.stop()
 
     # 2. Load the Model
