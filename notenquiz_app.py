@@ -11,8 +11,6 @@ from nltk.tokenize import sent_tokenize
 import random
 import re
 
-import nltk
-from nltk.downloader import DownloadError # <--- ADD THIS LINE (CRUCIAL)
 
 # --- Configuration ---
 MODEL_PATH = "./final_notes_quiz_model"
@@ -21,7 +19,8 @@ MODEL_PATH = "./final_notes_quiz_model"
 # The actual download logic should be made safe now that DownloadError is imported
 try:
     nltk.data.find('tokenizers/punkt')
-except (DownloadError, LookupError): # USE DownloadError (now imported) instead of nltk.downloader.DownloadError
+except Exception: # Catch any error (including LookupError) and force the download
+    import nltk # Re-import to be absolutely sure the module is ready for download command
     nltk.download('punkt')
 
 # --- Configuration ---
@@ -439,3 +438,4 @@ if generate_button:
         end_time = time.time()
 
         status.update(label=f"Generation Complete! Total Time: {end_time - start_time:.2f} seconds.", state="complete")
+
