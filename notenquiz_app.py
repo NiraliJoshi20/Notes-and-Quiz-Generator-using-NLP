@@ -7,6 +7,7 @@ import io
 import re
 from pypdf import PdfReader
 import nltk
+from nltk.downloader import DownloadError # CRITICAL: Explicit import for safe error handling
 from nltk.tokenize import sent_tokenize
 import random
 import re
@@ -48,6 +49,7 @@ st.set_page_config(
 
 # --- Core Helper Functions ---
 
+# Function to handle the Google Drive security redirect (newly added for this deployment)
 def get_confirm_token(response):
     """Parses Google Drive's redirect page for the confirmation token."""
     for key, value in response.cookies.items():
@@ -62,13 +64,14 @@ def load_model():
     a robust method that handles Google Drive's security checks.
     """
     
-    # 🛑 CRITICAL: YOUR CONSTRUCTED DIRECT DOWNLOAD LINK IS NOW HERE
+    # 🛑 CRITICAL: YOUR FILE ID IS HARDCODED HERE FOR THE FINAL ATTEMPT
     FILE_ID = "1dZfxKtpok84u2QI2egnuR39j8GclYdoC"
     DOWNLOAD_URL = "https://docs.google.com/uc?export=download" # Base URL for security check
     # -----------------------------------------------------------
     
     # 1. Check if the model is already downloaded/extracted
     if not os.path.exists(MODEL_PATH) or not os.listdir(MODEL_PATH):
+        
         st.info("Attempting robust download from Google Drive...")
 
         try:
@@ -84,6 +87,7 @@ def load_model():
             
             # Final check on response content type (should be application/zip)
             if 'html' in response.headers.get('Content-Type', '').lower() or response.status_code != 200:
+                 # This error triggers if the file is truly blocked or the ID is wrong
                  raise Exception("Download received HTML content instead of a ZIP file.")
 
             # --- CRITICAL EXTRACTION FIX ---
