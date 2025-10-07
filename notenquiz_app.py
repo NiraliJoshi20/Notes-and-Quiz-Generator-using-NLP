@@ -7,7 +7,7 @@ import io
 import re
 from pypdf import PdfReader
 import nltk
-# REMOVED: from nltk.downloader import DownloadError (This line caused the ImportError)
+from nltk.downloader import DownloadError # CRITICAL: Explicit import for safe error handling
 from nltk.tokenize import sent_tokenize
 import random
 import re
@@ -17,14 +17,10 @@ from io import BytesIO
 import shutil # Needed for folder deletion in extraction
 
 # --- Setup and Constants ---
-# --- FIX: Replaced the failing try/except with a universally safe LookupError ---
 try:
-    # Check if 'punkt' data is available
     nltk.data.find('tokenizers/punkt')
-except LookupError: 
-    # If not found, download it. This uses simple, reliable Python constructs.
+except (DownloadError, LookupError): 
     nltk.download('punkt')
-# ----------------------------------------------------------------------------------
 
 # --- Model and Generation Configuration ---
 MODEL_PATH = "./final_notes_quiz_model"
@@ -56,22 +52,19 @@ st.set_page_config(
 def load_model():
     """
     Downloads, unzips, and loads the T5 model from a public ZIP file.
-    This resolves deployment issues with large files (Git LFS).
     """
     
-    # 🛑 CRITICAL: REPLACE WITH YOUR DIRECT PUBLIC DOWNLOAD LINK
-    MODEL_DOWNLOAD_URL = "https://drive.google.com/file/d/1dZfxKtpok84u2QI2egnuR39j8GclYdoC/view?usp=sharing" 
+    # 🛑 CRITICAL: YOUR CONSTRUCTED DIRECT DOWNLOAD LINK IS NOW HERE
+    FILE_ID = "1dZfxKtpok84u2QI2egnuR39j8GclYdoC"
+    MODEL_DOWNLOAD_URL = f"https://drive.google.com/uc?export=download&id={FILE_ID}" 
     # -----------------------------------------------------------
     
     # 1. Check if the model is already downloaded/extracted
     if not os.path.exists(MODEL_PATH) or not os.listdir(MODEL_PATH):
         
-        if MODEL_DOWNLOAD_URL == "YOUR_DIRECT_PUBLIC_DOWNLOAD_LINK_HERE":
-             st.error("MODEL URL ERROR: Please replace the placeholder link in the code.")
-             st.stop()
+        if MODEL_DOWNLOAD_URL == f"https://drive.google.com/uc?export=download&id={FILE_ID}":
+             st.info("Attempting to download model via Google Drive direct link...")
 
-        st.warning(f"Model not found locally. Downloading from cloud source...")
-        
         try:
             # Download the ZIP file
             response = requests.get(MODEL_DOWNLOAD_URL, stream=True, timeout=300)
@@ -104,7 +97,7 @@ def load_model():
             st.success("Model downloaded and extracted successfully!")
         
         except Exception as e:
-            st.error(f"Error during model download/extraction: {e}. Check your requirements.txt for 'requests' and 'pypdf'.")
+            st.error(f"Error during model download/extraction: {e}. If the error is 'File is not a zip file,' the Drive link is not direct.")
             st.stop()
 
     # 2. Load the Model
