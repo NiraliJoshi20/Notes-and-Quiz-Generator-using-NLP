@@ -11,10 +11,17 @@ from nltk.tokenize import sent_tokenize
 import random
 import re
 
-# Download NLTK resources if not present (placed early to avoid breaking page_config)
+import nltk
+from nltk.downloader import DownloadError # <--- ADD THIS LINE (CRUCIAL)
+
+# --- Configuration ---
+MODEL_PATH = "./final_notes_quiz_model"
+# ... other constants ...
+
+# The actual download logic should be made safe now that DownloadError is imported
 try:
     nltk.data.find('tokenizers/punkt')
-except (nltk.downloader.DownloadError, LookupError):
+except (DownloadError, LookupError): # USE DownloadError (now imported) instead of nltk.downloader.DownloadError
     nltk.download('punkt')
 
 # --- Configuration ---
@@ -430,4 +437,5 @@ if generate_button:
 
         # Final Status Update
         end_time = time.time()
+
         status.update(label=f"Generation Complete! Total Time: {end_time - start_time:.2f} seconds.", state="complete")
