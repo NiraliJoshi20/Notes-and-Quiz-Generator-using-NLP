@@ -1,0 +1,9 @@
+streamlit
+transformers
+torch
+nltk
+pypdf
+sentencepiece
+pandas 
+scikit-learn
+datasets
