@@ -7,7 +7,7 @@ import io
 import re
 from pypdf import PdfReader
 import nltk
-from nltk.downloader import DownloadError # CRITICAL: Explicit import for safe error handling
+# REMOVED: from nltk.downloader import DownloadError (This line caused the ImportError)
 from nltk.tokenize import sent_tokenize
 import random
 import re
@@ -17,10 +17,14 @@ from io import BytesIO
 import shutil # Needed for folder deletion in extraction
 
 # --- Setup and Constants ---
+# --- FIX: Replaced the failing try/except with a universally safe LookupError ---
 try:
+    # Check if 'punkt' data is available
     nltk.data.find('tokenizers/punkt')
-except (DownloadError, LookupError): # Now uses the safe, imported DownloadError class
+except LookupError: 
+    # If not found, download it. This uses simple, reliable Python constructs.
     nltk.download('punkt')
+# ----------------------------------------------------------------------------------
 
 # --- Model and Generation Configuration ---
 MODEL_PATH = "./final_notes_quiz_model"
@@ -56,13 +60,13 @@ def load_model():
     """
     
     # 🛑 CRITICAL: REPLACE WITH YOUR DIRECT PUBLIC DOWNLOAD LINK
-    MODEL_DOWNLOAD_URL = "YOUR_DIRECT_PUBLIC_DOWNLOAD_LINK_HERE" 
+    MODEL_DOWNLOAD_URL = "https://drive.google.com/file/d/1dZfxKtpok84u2QI2egnuR39j8GclYdoC/view?usp=sharing" 
     # -----------------------------------------------------------
     
     # 1. Check if the model is already downloaded/extracted
     if not os.path.exists(MODEL_PATH) or not os.listdir(MODEL_PATH):
         
-        if MODEL_DOWNLOAD_URL == "https://drive.google.com/file/d/1dZfxKtpok84u2QI2egnuR39j8GclYdoC/view?usp=sharing":
+        if MODEL_DOWNLOAD_URL == "YOUR_DIRECT_PUBLIC_DOWNLOAD_LINK_HERE":
              st.error("MODEL URL ERROR: Please replace the placeholder link in the code.")
              st.stop()
 
